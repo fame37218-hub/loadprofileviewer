@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>โปรแกรมวิเคราะห์ข้อมูลมิเตอร์ไฟฟ้า PEA</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <style>
+        .bg-pea { background-color: #791b5c; }
+        .text-pea { color: #791b5c; }
+        .border-pea { border-color: #791b5c; }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="flex items-center gap-4 mb-6 bg-white p-4 rounded-lg shadow-md border-t-4 border-pea">
+            <div class="text-3xl font-bold text-pea">PEA</div>
+            <div>
+                <h1 class="text-2xl font-bold text-gray-800">โปรแกรมวิเคราะห์ข้อมูลมิเตอร์ไฟฟ้า</h1>
+                <p id="meterDisplay" class="text-gray-500 font-medium italic">กรุณาอัพโหลดไฟล์ข้อมูลมิเตอร์</p>
+            </div>
+        </header>
+        
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <label class="block mb-2 font-semibold">อัพโหลดไฟล์ .txt หรือ .csv:</label>
+            <input type="file" id="fileInput" accept=".txt,.csv" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-100 file:text-pea hover:file:bg-purple-200 cursor-pointer">
+        </div>
+
+        <div id="mainView" class="space-y-8">
+            <div class="bg-white p-6 rounded-lg shadow-md">
+                <h2 class="text-xl font-bold mb-4 text-pea">ภาพรวมพลังงานรายวัน (kWh)</h2>
+                <canvas id="dailyChart" height="100"></canvas>
+            </div>
+
+            <div id="allDataContainer" class="hidden bg-white p-6 rounded-lg shadow-md">
+                <div class="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
+                    <div class="flex items-center gap-2">
+                        <label class="font-bold text-gray-700">เดือน:</label>
+                        <select id="monthSelect" onchange="filterAllDataMonth()" class="border rounded px-3 py-1 bg-white shadow-sm border-pea focus:ring-2 focus:ring-purple-200">
+                            <option value="all">ทุกเดือน</option>
+                        </select>
+                    </div>
+                    <div class="text-sm text-gray-600">ล้อเมาส์ = ซูม · ลากคลุม = ซูมเจาะ · Ctrl+ลาก = เลื่อน</div>
+                    <button onclick="resetZoom()" class="flex items-center gap-1 px-3 py-1 border rounded hover:bg-purple-50 bg-white shadow-sm border-pea text-pea font-semibold">
+                        รีเซ็ตซูม
+                    </button>
+                </div>
+                <canvas id="allDataChart" height="120"></canvas>
+            </div>
+
+            <div id="calendarContainer" class="hidden space-y-6"></div>
+
+            <div id="detailContainer" class="hidden bg-white p-6 rounded-lg shadow-md">
+                <h2 id="detailTitle" class="text-xl font-bold mb-4 text-pea"></h2>
+                <canvas id="detailChart" height="120"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let rawData = [];
+        let dailyStatsGlobal = {};
+
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            reader.onload = function(e) { processData(e.target.result); };
+            reader.readAsText(file);
+        });
+
+        function processData(text) {
+            const lines = text.split('\n');
+            rawData = [];
+            dailyStatsGlobal = {};
+            const monthsSet = new Set();
+            let detectedMeter = "";
+
+            lines.forEach(line => {
+                const cols = line.split(',');
+                if (cols.length < 8) return;
+                if (!detectedMeter) detectedMeter = cols[0];
+                
+                const datetime = cols[1];
+                const [datePart, timePart] = datetime.split(' ');
+                if (!datePart || !timePart) return;
+                const [year, month, day] = datePart.split('-');
+                const yearMonth = `${year}-${month}`;
+                monthsSet.add(yearMonth);
+                
+                const voltageA = cols[3] !== '-' ? parseFloat(cols[3]) / 100 : null;
+                const kw_ex = cols[6] !== '-' ? parseFloat(cols[6]) : 0;
+                const kwh = (kw_ex / 1000) / 4;
+
+                if (!dailyStatsGlobal[datePart]) dailyStatsGlobal[datePart] = { kwh: 0, yearMonth: yearMonth };
+                dailyStatsGlobal[datePart].kwh += kwh;
+                
+                rawData.push({ date: datePart, datetime, month: yearMonth, time: timePart, kw_ex, voltageA });
+            });
+
+            document.getElementById('meterDisplay').innerText = `หมายเลขมิเตอร์ PEA: ${detectedMeter}`;
+            updateMonthSelect(Array.from(monthsSet).sort());
+            renderMainChart(dailyStatsGlobal);
+            renderAllDataChart('all');
+            renderCalendars(Array.from(monthsSet).sort());
+        }
+
+        function renderCalendars(yearMonths) {
+            const container = document.getElementById('calendarContainer');
+            container.innerHTML = '<h2 class="text-xl font-bold text-pea mt-8">ปฏิทินพลังงานรายวัน</h2>';
+            container.classList.remove('hidden');
+
+            yearMonths.forEach(ym => {
+                const [year, month] = ym.split('-');
+                const avg = getAverage(ym);
+                
+                let html = `<div class="bg-white p-6 rounded-lg shadow-md"><h3 class="font-bold text-lg mb-4 text-pea">เดือน ${ym} (ค่าเฉลี่ย: ${avg.toFixed(2)} kWh)</h3>`;
+                html += `<div class="grid grid-cols-7 gap-2 text-center font-bold mb-2 text-gray-600"><div>อา</div><div>จ</div><div>อ</div><div>พ</div><div>พฤ</div><div>ศ</div><div>ส</div></div>`;
+                html += `<div class="grid grid-cols-7 gap-2">`;
+                
+                const daysInMonth = new Date(year, month, 0).getDate();
+                const firstDay = new Date(year, month - 1, 1).getDay();
+
+                for(let i=0; i<firstDay; i++) html += `<div></div>`;
+                for(let d=1; d<=daysInMonth; d++) {
+                    const dateKey = `${ym}-${d.toString().padStart(2, '0')}`;
+                    const val = dailyStatsGlobal[dateKey]?.kwh || 0;
+                    let color = 'bg-gray-100 hover:bg-gray-200 cursor-pointer';
+                    if (val > avg * 2) color = 'bg-red-500 text-white hover:bg-red-600 cursor-pointer';
+                    else if (val > avg * 1.5) color = 'bg-orange-400 text-white hover:bg-orange-500 cursor-pointer';
+                    
+                    html += `<div onclick="showDetail('${dateKey}')" class="${color} p-2 rounded text-sm border transition"><strong>${d}</strong><br>${val.toFixed(1)}</div>`;
+                }
+                html += `</div></div>`;
+                container.innerHTML += html;
+            });
+        }
+
+        function getAverage(ym) {
+            const vals = Object.values(dailyStatsGlobal).filter(d => d.yearMonth === ym).map(d => d.kwh);
+            return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+        }
+
+        function updateMonthSelect(months) {
+            const select = document.getElementById('monthSelect');
+            select.innerHTML = '<option value="all">ทุกเดือน</option>';
+            months.forEach(m => select.innerHTML += `<option value="${m}">เดือน ${m}</option>`);
+        }
+
+        function renderMainChart(dailyStats) {
+            const yearMonths = [...new Set(Object.values(dailyStats).map(d => d.yearMonth))].sort();
+            const colors = ['#791b5c', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6'];
+            
+            const ctx = document.getElementById('dailyChart').getContext('2d');
+            if (window.dailyChart instanceof Chart) window.dailyChart.destroy();
+            
+            window.dailyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: Array.from({length: 31}, (_, i) => i + 1),
+                    datasets: yearMonths.map((ym, index) => ({
+                        label: `เดือน ${ym}`,
+                        data: Array.from({length: 31}, (_, i) => {
+                            const dateKey = `${ym}-${(i+1).toString().padStart(2, '0')}`;
+                            return dailyStats[dateKey]?.kwh || 0;
+                        }),
+                        backgroundColor: colors[index % colors.length]
+                    }))
+                },
+                options: {
+                    scales: { x: { title: { display: true, text: 'วันที่' } }, y: { title: { display: true, text: 'kWh' } } },
+                    onClick: (e, elements) => {
+                        if (elements.length > 0) {
+                            const day = elements[0].index + 1;
+                            const ym = yearMonths[elements[0].datasetIndex];
+                            showDetail(`${ym}-${day.toString().padStart(2, '0')}`);
+                        }
+                    }
+                }
+            });
+        }
+
+        function filterAllDataMonth() { renderAllDataChart(document.getElementById('monthSelect').value); }
+        function resetZoom() { if (window.allDataChart instanceof Chart) window.allDataChart.resetZoom(); }
+
+        function renderAllDataChart(month = 'all') {
+            document.getElementById('allDataContainer').classList.remove('hidden');
+            const ctx = document.getElementById('allDataChart').getContext('2d');
+            if (window.allDataChart instanceof Chart) window.allDataChart.destroy();
+
+            const filteredData = month === 'all' ? rawData : rawData.filter(d => d.month === month);
+
+            window.allDataChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: filteredData.map(d => d.datetime),
+                    datasets: [
+                        { label: 'แรงดันเฟส A (V)', data: filteredData.map(d => d.voltageA), borderColor: '#791b5c', yAxisID: 'y1', pointRadius: 0, borderWidth: 1.5 },
+                        { label: 'จ่ายออก EX (W)', data: filteredData.map(d => d.kw_ex), borderColor: '#f59e0b', yAxisID: 'y2', pointRadius: 0, borderWidth: 1.5 }
+                    ]
+                },
+                options: {
+                    plugins: {
+                        zoom: { pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' }, zoom: { wheel: { enabled: true }, drag: { enabled: true }, mode: 'x' } }
+                    },
+                    scales: { y1: { title: { display: true, text: 'แรงดัน (V)' }, position: 'left' }, y2: { title: { display: true, text: 'กำลัง (W)' }, position: 'right', grid: { drawOnChartArea: false } } }
+                }
+            });
+        }
+
+        function showDetail(date) {
+            document.getElementById('detailContainer').classList.remove('hidden');
+            document.getElementById('detailTitle').innerText = `รายละเอียดวันที่ ${date}`;
+            const dayData = rawData.filter(d => d.date === date);
+            const ctx = document.getElementById('detailChart').getContext('2d');
+            if (window.detailChart instanceof Chart) window.detailChart.destroy();
+
+            window.detailChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dayData.map(d => d.time),
+                    datasets: [
+                        { label: 'แรงดันเฟส A (V)', data: dayData.map(d => d.voltageA), borderColor: '#791b5c', yAxisID: 'y1', pointRadius: 3 },
+                        { label: 'จ่ายออก EX (W)', data: dayData.map(d => d.kw_ex), borderColor: '#f59e0b', yAxisID: 'y2', pointRadius: 3 }
+                    ]
+                },
+                options: {
+                    scales: { y1: { title: { display: true, text: 'แรงดัน (V)' }, position: 'left' }, y2: { title: { display: true, text: 'กำลัง (W)' }, position: 'right', grid: { drawOnChartArea: false } } }
+                }
+            });
+            window.scrollBy({ top: document.body.scrollHeight, behavior: 'smooth' });
+        }
+    </script>
+</body>
+</html>
